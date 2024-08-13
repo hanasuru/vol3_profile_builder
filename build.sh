@@ -1,60 +1,92 @@
 #!/bin/bash
 GENERIC_BASE_URL='http://ddebs.ubuntu.com/pool/main/l/linux/'
-HWE_BASE_URL='http://ddebs.ubuntu.com/pool/main/l/linux-hwe/'
+CANONICAL_BASE_URL='https://launchpad.net/ubuntu/'
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
-NC='\033[0m'
+
+BOLD="\033[1m"
+RED='\033[1;31m'
+GREEN='\033[1;32m'
+YELLOW='\033[1;33m'
+BLUE="\033[1;34m"
+CYAN="\033[1;36m"
+RESET="\033[0m"
 
 install_requirement(){
     if ! which go > /dev/null 2>&1; then
-        echo -e "${YELLOW}⚠️ go is not in PATH.${NC}"
-        echo -e "${GREEN}✅ Installing golang-go dependencies${NC}"
+        echo -e "${YELLOW}⚠️ go is not in PATH.${RESET}"
+        echo -e "${GREEN}✅ Installing golang-go dependencies${RESET}"
         sudo apt install golang-go build-essential -y
         echo
     fi
 
     if ! which dwarf2json > /dev/null 2>&1; then
-        echo -e "${YELLOW}⚠️ dwarf2json is not in PATH${NC}"
-        echo -e "${GREEN}✅ Compiling and Installing dwarf2json${NC}"
+        echo -e "${YELLOW}⚠️ dwarf2json is not in PATH${RESET}"
+        echo -e "${GREEN}✅ Compiling and Installing dwarf2json${RESET}"
         git clone https://github.com/volatilityfoundation/dwarf2json
         cd dwarf2json && go build && chmod +x dwarf2json && sudo mv dwarf2json /usr/bin/
         echo && cd ..
     fi
 }
 
-get_ddeb_path(){
+get_ddeb_url(){
     LIST_FILE=$(curl -s $GENERIC_BASE_URL)
-    DDEB_PATH=$(echo $LIST_FILE | grep -oP "(?<=href=\")linux-image-(unsigned-)?$1-generic-dbgsym_$1[\d\.\-]+_$2.ddeb")
+    echo $LIST_FILE | grep -oP "(?<=href=\")linux-image-(unsigned-)?$1-generic-dbgsym_$1[\d\.\-]+_$2.ddeb"
+}
+
+get_canonical_name(){
+    curl -s http://archive.ubuntu.com/ubuntu/dists/ | grep -oP '(?<=href=")[\w]+(?=/")' | paste -sd ','
+}
+
+get_canonical_url(){
+    URLS=$(eval "echo https://launchpad.net/ubuntu/{$(get_canonical_name)}/$2/linux-image-unsigned-$1-generic-dbgsym")
     
-    echo $DDEB_PATH
-    if [ -z "${DDEB_PATH}" ]; then
-        exit 1
+    for URL in $URLS; do
+        if curl -s "$URL" | grep -m1 -oP '(?<=/ubuntu/).+dbgsym/[\d\.\-~]+'; then
+            break
+        fi
+    done
+}
+
+get_kernel_path(){
+    DDEB_URL=$(get_ddeb_url $1 $2)
+
+    if [ -z "${DDEB_URL}" ]; then
+        CANONICAL_URL=$(get_canonical_url $1 $2)
+        if [ -z "${CANONICAL_URL}" ]; then
+            exit 1
+        else
+            curl -s "${CANONICAL_BASE_URL}${CANONICAL_URL}" | grep -oP 'http://launchpadlibrarian.net.+.ddeb(?=")'
+        fi
+
+    else
+        echo "${GENERIC_BASE_URL}${DDEB_URL}"
     fi
 }
 
-download_ddeb(){
-    echo -e "${YELLOW}⚠️ $1 does not exist yet${NC}"
-    echo -e "${GREEN}✅ Downloading $1 from repository${NC}"
-    DDEB_URL="${GENERIC_BASE_URL}$1"
-    wget -P /tmp $DDEB_URL
+download_kernel_image(){
+    echo -e "${YELLOW}⚠️ $1 does not exist yet${RESET}"
+    echo -e "${GREEN}✅ Downloading $1 from repository${RESET}"
+    wget -c -P /tmp $1
     echo
 }
 
 unpack_vm_kernel(){
-    echo -e "${GREEN}✅ Unpacking vmlinux file${NC}"
+    echo -e "${GREEN}✅ Unpacking vmlinux file${RESET}"
     ar x /tmp/$1 data.tar.xz
     tar -xI/usr/bin/xz -f data.tar.xz ./usr/lib/debug/boot/vmlinux-$2-generic
 }
 
-generate_dwarf_file(){
-    echo -e "${GREEN}✅ Generating DWARF JSON file${NC}"
+generate_isf_file(){
+    echo -e "${GREEN}✅ Generating ISF file${RESET}"
     dwarf2json linux --elf ./usr/lib/debug/boot/vmlinux-$1-generic | xz > "linux-image-${1}-generic_$2.json.xz"
 }
 
 cleanup_file(){
-    rm -f $1 data.tar.xz 
+    echo -e "${GREEN}✅ Cleaning kernel image file${RESET}"
+    if [[ "$(pwd)" != "/" ]]; then
+        rm -rf ./usr
+    fi
+    rm -rf $1 data.tar.xz
 }
 
 if [ "$#" -eq 2 ]; then
@@ -63,42 +95,42 @@ if [ "$#" -eq 2 ]; then
     
     install_requirement
     if [ $? -ne 0 ]; then
-        echo -e "${RED}❌ Error occurred while installing dependencies${NC}"
+        echo -e "${RED}❌ Error occurred while installing dependencies${RESET}"
         exit 1
     fi
 
-    DDEB_PATH=$(get_ddeb_path $KERNEL_VERSION $ARCH)
+    echo -e "${GREEN}✅ Getting kernel url from repository${RESET}"
+    KERNEL_URL=$(get_kernel_path $KERNEL_VERSION $ARCH)
     if [ $? -ne 0 ]; then
-        echo -e "${RED}❌ Requested linux $KERNEL_VERSION kernel for $ARCH is nowhere to be found${NC}"
+        echo -e "${RED}❌ Requested linux ${KERNEL_VERSION}_${ARCH} is nowhere to be found on both ddebs or cannonical repository${RESET}"
         exit 1
-    fi
-
-    rm /tmp/*.ddeb
-    if [ ! -e "/tmp/$DDEB_PATH" ]; then
-        download_ddeb $DDEB_PATH
-        if [ $? -ne 0 ]; then
-            echo -e "${RED}❌ Error occurred while downloading $DDEB_PATH${NC}"
-            exit 1
-        fi
     fi
     
-    unpack_vm_kernel $DDEB_PATH $KERNEL_VERSION
+    download_kernel_image $KERNEL_URL
     if [ $? -ne 0 ]; then
-        echo -e "${RED}❌ Error occurred while unpacking ddeb kernel file${NC}"
+        echo -e "${RED}❌ Error occurred while downloading $KERNEL_URL${RESET}"
         exit 1
     fi
 
-    generate_dwarf_file $KERNEL_VERSION $ARCH
+    unpack_vm_kernel $(basename $KERNEL_URL) $KERNEL_VERSION
     if [ $? -ne 0 ]; then
-        echo -e "${RED}❌ Error occurred while generating DWARF-json file${NC}"
+        echo -e "${RED}❌ Error occurred while unpacking kernel image file${RESET}"
         exit 1
     fi
 
-    cleanup_file $DDEB_PATH
+    generate_isf_file $KERNEL_VERSION $ARCH
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}❌ Error occurred while generating ISF file${RESET}"
+        exit 1
+    fi
 
-    echo -e "${GREEN}✅ Saved profile to linux-image-${1}-generic.json.xz${NC}"
+    cleanup_file $(basename $KERNEL_URL)
+    echo -e "${GREEN}✅ Saved profile to linux-image-${1}-generic.json.xz${RESET}"
 else
-    echo
-    echo "Usage: $0 kernel_version architecture"
-    echo "Example: $0 5.15.0-118 amd64"
+    echo -e "\n${BLUE}Usage:${RESET} $(basename $0) ${CYAN}<kernel_version>${RESET} ${CYAN}<architecture>${RESET}"
+    echo -e "\n${BLUE}Arguments:${RESET}"
+    echo -e "  ${CYAN}<kernel_version>${RESET}   Specify the kernel version (e.g., ${GREEN}5.15.0-118${RESET})"
+    echo -e "  ${CYAN}<architecture>${RESET}     Specify the architecture (e.g., ${GREEN}amd64${RESET})"
+    echo -e "\n${BLUE}Example:${RESET}"
+    echo -e "  $(basename $0) ${GREEN}5.15.0-118${RESET} ${GREEN}amd64${RESET}\n"
 fi
