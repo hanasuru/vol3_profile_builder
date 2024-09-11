@@ -23,7 +23,7 @@ install_requirement(){
         echo -e "${YELLOW}⚠️ dwarf2json is not in PATH${RESET}"
         echo -e "${GREEN}✅ Compiling and Installing dwarf2json${RESET}"
         git clone https://github.com/volatilityfoundation/dwarf2json
-        cd dwarf2json && go build && chmod +x dwarf2json && sudo mv dwarf2json /usr/bin/
+        cd dwarf2json && go build && chmod +x dwarf2json && sudo mv dwarf2json /usr/local/bin/
         echo && cd ..
     fi
 }
@@ -64,7 +64,7 @@ get_kernel_path(){
 }
 
 download_kernel_image(){
-    echo -e "${YELLOW}⚠️ $1 does not exist yet${RESET}"
+    echo -e "${YELLOW}⚠️ $(basename $1) does not exist yet${RESET}"
     echo -e "${GREEN}✅ Downloading $1 from repository${RESET}"
     wget -c -P /tmp $1
     echo
@@ -86,12 +86,30 @@ cleanup_file(){
     if [[ "$(pwd)" != "/" ]]; then
         rm -rf ./usr
     fi
-    rm -rf $1 data.tar.xz
+    rm -rf $1 data.tar.xz dwarf2json
 }
 
-if [ "$#" -eq 2 ]; then
+upload_isf_file(){
+    echo -e "${GREEN}✅ Uploading ISF File${RESET}"
+    if ! which ffsend > /dev/null 2>&1; then
+        echo -e "${YELLOW}⚠️ ffsend is not in PATH${RESET}"
+        echo -e "${GREEN}✅ Installing ffsend${RESET}"
+        sudo wget -q -O/usr/local/bin/ffsend https://github.com/timvisee/ffsend/releases/download/v0.2.76/ffsend-v0.2.76-linux-x64-static
+        sudo chmod +x /usr/local/bin/ffsend
+    fi
+    echo -e "${GREEN}"
+    ffsend upload "linux-image-${1}-generic_$2.json.xz"
+    echo -e "${RESET}"
+}
+
+if [ "$#" -ge 2 ] && [ "$#" -le 3 ]; then
     KERNEL_VERSION=$1
     ARCH=$2
+
+    UPLOAD=0
+    if [ "$#" -eq 3 ] && [ "$3" == "--upload" ]; then
+        UPLOAD=1
+    fi
     
     install_requirement
     if [ $? -ne 0 ]; then
@@ -102,10 +120,10 @@ if [ "$#" -eq 2 ]; then
     echo -e "${GREEN}✅ Getting kernel url from repository${RESET}"
     KERNEL_URL=$(get_kernel_path $KERNEL_VERSION $ARCH)
     if [ $? -ne 0 ]; then
-        echo -e "${RED}❌ Requested linux ${KERNEL_VERSION}_${ARCH} is nowhere to be found on both ddebs or cannonical repository${RESET}"
+        echo -e "${RED}❌ Requested linux ${KERNEL_VERSION}_${ARCH} is nowhere to be found on both ddebs or canonical repository${RESET}"
         exit 1
     fi
-    
+
     download_kernel_image $KERNEL_URL
     if [ $? -ne 0 ]; then
         echo -e "${RED}❌ Error occurred while downloading $KERNEL_URL${RESET}"
@@ -125,12 +143,22 @@ if [ "$#" -eq 2 ]; then
     fi
 
     cleanup_file $(basename $KERNEL_URL)
-    echo -e "${GREEN}✅ Saved profile to linux-image-${1}-generic.json.xz${RESET}"
+    echo -e "${GREEN}✅ Saved profile to linux-image-${KERNEL_VERSION}-generic.json.xz${RESET}"
+
+    if [ $UPLOAD -eq 1 ]; then
+        upload_isf_file $KERNEL_VERSION $ARCH
+        if [ $? -ne 0 ]; then
+            echo -e "${RED}❌ Error occurred during upload${RESET}"
+            exit 1
+        fi
+    fi
+
 else
-    echo -e "\n${BLUE}Usage:${RESET} $(basename $0) ${CYAN}<kernel_version>${RESET} ${CYAN}<architecture>${RESET}"
+    echo -e "\n${BLUE}Usage:${RESET} $(basename $0) ${CYAN}<kernel_version>${RESET} ${CYAN}<architecture>${RESET} [--upload]"
     echo -e "\n${BLUE}Arguments:${RESET}"
-    echo -e "  ${CYAN}<kernel_version>${RESET}   Specify the kernel version (e.g., ${GREEN}5.15.0-118${RESET})"
+    echo -e "  ${CYAN}<kernel_version>${RESET}   Specify the kernel version (e.g., ${GREEN}5.4.0-192${RESET})"
     echo -e "  ${CYAN}<architecture>${RESET}     Specify the architecture (e.g., ${GREEN}amd64${RESET})"
+    echo -e "  ${CYAN}--upload${RESET}           Upload ISF file to public send-instances (optional)"
     echo -e "\n${BLUE}Example:${RESET}"
-    echo -e "  $(basename $0) ${GREEN}5.15.0-118${RESET} ${GREEN}amd64${RESET}\n"
+    echo -e "  $(basename $0) ${GREEN}5.4.0-192${RESET} ${GREEN}amd64${RESET} ${CYAN}--upload${RESET}\n"
 fi
